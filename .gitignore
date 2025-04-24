@@ -1,0 +1,8 @@
+dist/
+build/
+.idea/
+venv/
+__pycache__/
+.DS_Store
+*.pyc
+*.spec
