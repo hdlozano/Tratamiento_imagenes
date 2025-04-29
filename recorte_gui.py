@@ -8,20 +8,24 @@ import threading
 import time
 import math
 import traceback
+import json # <--- Importar JSON
 
 # --- VALORES POR DEFECTO ---
 margins_top_files_default = { 'top': 260, 'bottom': 350, 'left': 50, 'right': 55 }
 margins_bottom_files_default = { 'top': 280, 'bottom': 400, 'left': 80, 'right': 10 }
 valid_extensions = ('.jpg', '.jpeg', '.png', '.bmp', '.tif', '.tiff')
-default_output_folder_name = "Recortes_Recursivo"
-default_jpeg_quality = 50
-default_png_compression = 2
-tiff_compression_options = {
-    1: "Ninguna", 5: "LZW (Lossless)", 8: "ZIP (Lossless)", 7: "JPEG (Lossy)"
-}
-default_tiff_compression_flag = 7
+default_output_folder_name = "Imagenes_pro"
+default_jpeg_quality = 90
+default_png_compression = 3
+tiff_compression_options = { 1: "Ninguna", 5: "LZW (Lossless)", 8: "ZIP (Lossless)", 7: "JPEG (Lossy)" }
+default_tiff_compression_flag = 5
 output_formats = { "JPEG (*.jpg)": ".jpg", "TIFF (*.tif)": ".tif" }
 default_output_format_key = "JPEG (*.jpg)"
+default_top_identifier = "Top"
+default_bottom_identifier = "Bottom"
+
+# --- RUTA ARCHIVO CONFIGURACIÓN ---
+CONFIG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "recortador_config.json")
 
 # --- FUNCIÓN AUXILIAR PARA FORMATEAR TIEMPO ---
 def format_time(seconds):
@@ -38,8 +42,7 @@ def format_time(seconds):
 def crop_image_with_margins(image_path, output_path, margins, compression_params, log_callback):
     t_start_read = time.perf_counter()
     image_to_save = None
-# --- INICIO CORRECCIÓN INDENTACIÓN ---
-    try:
+    try: # <-- INDENTACIÓN CORREGIDA
         image = cv2.imread(image_path, cv2.IMREAD_UNCHANGED)
         if image is None:
             log_callback(f"  Error carga: {os.path.basename(image_path)}\n")
@@ -65,7 +68,10 @@ def crop_image_with_margins(image_path, output_path, margins, compression_params
         image_to_save = cropped_image # Default
         t_end_process = time.perf_counter()
 
-        os.makedirs(os.path.dirname(output_path), exist_ok=True)
+        output_dir_path = os.path.dirname(output_path)
+        if output_dir_path:
+            os.makedirs(output_dir_path, exist_ok=True)
+
         t_start_write = time.perf_counter()
         write_params = []
         file_ext = os.path.splitext(output_path)[1].lower()
@@ -152,9 +158,10 @@ def crop_image_with_margins(image_path, output_path, margins, compression_params
         t_proc = t_end_process - t_start_process if 't_end_process' in locals() else 0.0
         t_write = t_end_write - t_start_write if 't_end_write' in locals() else 0.0
         return False, t_read, t_proc, t_write
+# --- FIN FUNCIÓN ---
 
 
-# --- FUNCIÓN AUXILIAR para convertir a BGR uint8 ---
+# --- FUNCIÓN AUXILIAR convert_to_bgr_uint8 ---
 def convert_to_bgr_uint8(img, format_name):
     logs = ""; current_dtype = img.dtype; current_channels = img.shape[2] if len(img.shape) > 2 else 1; temp_image = img
     if current_dtype != np.uint8:
@@ -165,7 +172,6 @@ def convert_to_bgr_uint8(img, format_name):
             try: temp_image_clipped = np.clip(img, 0, 255); temp_image = temp_image_clipped.astype(np.uint8);
             except Exception as conv_err: logs += f"    Error convirtiendo {current_dtype} a uint8: {conv_err}.\n"; return None, logs
         current_channels = temp_image.shape[2] if len(temp_image.shape) > 2 else 1
-
     if current_channels == 4:
         logs += f"    Advertencia: Eliminando canal Alfa para {format_name}.\n"; image_converted = cv2.cvtColor(temp_image, cv2.COLOR_BGRA2BGR)
     elif current_channels == 1:
@@ -176,13 +182,12 @@ def convert_to_bgr_uint8(img, format_name):
         logs += f"    Error: Canales ({current_channels}) no soportados para {format_name}.\n"; return None, logs
     return image_converted, logs
 
-
 # --- CLASE DE LA APLICACIÓN GUI ---
 class BatchCropperApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("Recortador de Imágenes v1.0")
-        self.root.geometry("800x680")
+        self.root.title("Recortador de Imágenes v1.0 ")
+        self.root.geometry("800x710")
 
         self.input_folder_path = tk.StringVar(); self.output_folder_path = tk.StringVar()
         self.output_folder_name_var = tk.StringVar(value=default_output_folder_name)
@@ -191,6 +196,10 @@ class BatchCropperApp:
         self.tiff_compression_var = tk.StringVar()
         self.tiff_flag_map = {v: k for k, v in tiff_compression_options.items()}
         self.output_format_var = tk.StringVar(value=default_output_format_key)
+        self.top_identifier_var = tk.StringVar(value=default_top_identifier)
+        self.bottom_identifier_var = tk.StringVar(value=default_bottom_identifier)
+        self.margins_top_vars = {key: tk.IntVar(value=val) for key, val in margins_top_files_default.items()}
+        self.margins_bottom_vars = {key: tk.IntVar(value=val) for key, val in margins_bottom_files_default.items()}
 
         self.progress_var = tk.DoubleVar(value=0.0); self.etr_var = tk.StringVar(value="Restante: --:--")
         self.progress_percent_var = tk.StringVar(value="0%"); self.cancel_event = threading.Event()
@@ -208,14 +217,19 @@ class BatchCropperApp:
         ttk.Label(top_frame, text="Ruta Carpeta Salida:").grid(row=2, column=0, padx=5, pady=2, sticky="w"); ttk.Label(top_frame, textvariable=self.output_folder_path, wraplength=380, foreground="grey", anchor="w").grid(row=2, column=1, padx=5, pady=2, sticky="ew")
         button_frame = ttk.Frame(top_frame); button_frame.grid(row=0, column=2, rowspan=3, padx=(10, 5), pady=5, sticky="ns"); self.start_button = ttk.Button(button_frame, text="Iniciar", command=self.start_processing_thread, width=10); self.start_button.pack(pady=5, fill=tk.X); self.cancel_button = ttk.Button(button_frame, text="Cancelar", command=self.cancel_processing, width=10, state=tk.DISABLED); self.cancel_button.pack(pady=5, fill=tk.X)
 
-        margins_frame = ttk.LabelFrame(main_frame, text="Márgenes (px)", padding="10"); margins_frame.grid(row=1, column=0, sticky="ew", padx=5, pady=5); margins_frame.columnconfigure(1, weight=0); margins_frame.columnconfigure(2, weight=1); margins_frame.columnconfigure(3, weight=0); margins_frame.columnconfigure(4, weight=1); margins_frame.columnconfigure(5, weight=0); margins_frame.columnconfigure(6, weight=1); margins_frame.columnconfigure(7, weight=0); margins_frame.columnconfigure(8, weight=1)
-        ttk.Label(margins_frame, text="Top:", font="-weight bold").grid(row=0, column=0, padx=(0,10), pady=2, sticky="w"); self.spinboxes_top = self.create_margin_spinboxes_inline(margins_frame, margins_top_files_default, target_row=0)
-        ttk.Label(margins_frame, text="Bottom:", font="-weight bold").grid(row=1, column=0, padx=(0,10), pady=2, sticky="w"); self.spinboxes_bottom = self.create_margin_spinboxes_inline(margins_frame, margins_bottom_files_default, target_row=1)
+        margins_frame = ttk.LabelFrame(main_frame, text="Identificadores y Márgenes (px)", padding="10"); margins_frame.grid(row=1, column=0, sticky="ew", padx=5, pady=5); margins_frame.columnconfigure(1, weight=1); margins_frame.columnconfigure(3, weight=1)
+        ttk.Label(margins_frame, text="Identificador 'Frente':").grid(row=0, column=0, padx=5, pady=5, sticky="w"); self.top_id_entry = ttk.Entry(margins_frame, textvariable=self.top_identifier_var, width=20); self.top_id_entry.grid(row=0, column=1, padx=5, pady=5, sticky="ew")
+        ttk.Label(margins_frame, text="Identificador 'Reverso':").grid(row=0, column=2, padx=(15, 5), pady=5, sticky="w"); self.bottom_id_entry = ttk.Entry(margins_frame, textvariable=self.bottom_identifier_var, width=20); self.bottom_id_entry.grid(row=0, column=3, padx=5, pady=5, sticky="ew")
+        #ttk.Separator(margins_frame, orient=tk.HORIZONTAL).grid(row=1, column=0, columnspan=8, pady=(10, 5), sticky="ew")
+        ttk.Label(margins_frame, text="Márgenes para Identificador 'Frente':", font="-weight bold").grid(row=2, column=0, columnspan=4, padx=5, pady=(5, 2), sticky="w")
+        self.spinboxes_top_widgets = self.create_margin_spinboxes_inline(margins_frame, self.margins_top_vars, target_row=3, start_col=2)
+        ttk.Label(margins_frame, text="Márgenes para Identificador 'Reverso':", font="-weight bold").grid(row=4, column=0, columnspan=4, padx=5, pady=(10, 2), sticky="w")
+        self.spinboxes_bottom_widgets = self.create_margin_spinboxes_inline(margins_frame, self.margins_bottom_vars, target_row=5, start_col=2)
 
         format_comp_frame = ttk.LabelFrame(main_frame, text="Formato Salida y Compresión", padding="10"); format_comp_frame.grid(row=2, column=0, sticky="ew", padx=5, pady=5); format_comp_frame.columnconfigure(1, weight=1); format_comp_frame.columnconfigure(3, weight=1); format_comp_frame.columnconfigure(5, weight=0)
-        ttk.Label(format_comp_frame, text="Formato Salida:").grid(row=0, column=0, padx=5, pady=5, sticky="w"); self.output_format_combo = ttk.Combobox(format_comp_frame, textvariable=self.output_format_var, values=list(output_formats.keys()), state="readonly", width=15); self.output_format_combo.grid(row=0, column=1, padx=5, pady=5, sticky="w"); self.output_format_var.set(default_output_format_key)
+        ttk.Label(format_comp_frame, text="Formato Salida:").grid(row=0, column=0, padx=5, pady=5, sticky="w"); self.output_format_combo = ttk.Combobox(format_comp_frame, textvariable=self.output_format_var, values=list(output_formats.keys()), state="readonly", width=15); self.output_format_combo.grid(row=0, column=1, padx=5, pady=5, sticky="w");
         ttk.Label(format_comp_frame, text="JPEG (0-100):").grid(row=1, column=0, padx=5, pady=5, sticky="w"); self.jpeg_quality_slider = ttk.Scale(format_comp_frame, from_=0, to=100, orient=tk.HORIZONTAL, variable=self.jpeg_quality_var, command=lambda s: self.jpeg_quality_var.set(int(float(s))), length=150); self.jpeg_quality_slider.grid(row=1, column=1, padx=5, pady=5, sticky="ew"); self.jpeg_quality_label = ttk.Label(format_comp_frame, textvariable=self.jpeg_quality_var, width=4); self.jpeg_quality_label.grid(row=1, column=2, padx=(0, 15), pady=5)
-        ttk.Label(format_comp_frame, text="TIFF Compresión:").grid(row=1, column=3, padx=5, pady=5, sticky="w"); self.tiff_compression_combo = ttk.Combobox(format_comp_frame, textvariable=self.tiff_compression_var, values=list(tiff_compression_options.values()), state="readonly", width=18); default_tiff_name = tiff_compression_options.get(default_tiff_compression_flag, "LZW (Lossless)"); self.tiff_compression_var.set(default_tiff_name); self.tiff_compression_combo.grid(row=1, column=4, columnspan=2, padx=5, pady=5, sticky="w")
+        ttk.Label(format_comp_frame, text="TIFF Compresión:").grid(row=1, column=3, padx=5, pady=5, sticky="w"); self.tiff_compression_combo = ttk.Combobox(format_comp_frame, textvariable=self.tiff_compression_var, values=list(tiff_compression_options.values()), state="readonly", width=18); self.tiff_compression_combo.grid(row=1, column=4, columnspan=2, padx=5, pady=5, sticky="w");
 
         progress_frame = ttk.Frame(main_frame, padding=(5, 0, 5, 5)); progress_frame.grid(row=3, column=0, sticky="ew", padx=5, pady=(10, 0)); progress_frame.columnconfigure(0, weight=1); progress_frame.columnconfigure(1, weight=0); progress_frame.columnconfigure(2, weight=0)
         self.progress_bar = ttk.Progressbar(progress_frame, orient="horizontal", length=100, mode="determinate", variable=self.progress_var); self.progress_bar.grid(row=0, column=0, sticky="ew", padx=(0, 10))
@@ -226,20 +240,29 @@ class BatchCropperApp:
         log_frame = ttk.Frame(main_frame); log_frame.grid(row=4, column=0, sticky="nsew", padx=5, pady=(5, 5)); main_frame.rowconfigure(4, weight=1); log_frame.columnconfigure(0, weight=1); log_frame.rowconfigure(1, weight=1)
         log_label = ttk.Label(log_frame, text="Registro de Proceso:"); log_label.grid(row=0, column=0, sticky="w", pady=(0, 5)); self.log_area = scrolledtext.ScrolledText(log_frame, height=10, wrap=tk.WORD, state=tk.DISABLED); self.log_area.grid(row=1, column=0, sticky="nsew")
 
+        self.load_settings()
+        if not self.tiff_compression_var.get(): self.tiff_compression_var.set(tiff_compression_options.get(default_tiff_compression_flag))
+        if not self.output_format_var.get(): self.output_format_var.set(default_output_format_key)
+
+        self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
         self.update_output_path_display()
 
     # --- Métodos auxiliares ---
-    def create_margin_spinboxes_inline(self, parent_frame, defaults, target_row):
-        spinboxes = {}; keys_order = ['top', 'bottom', 'left', 'right']; labels_text = {'top': 'Arriba:', 'bottom': 'Abajo:', 'left': 'Izquierda:', 'right': 'Derecha:'}; current_col = 1
-        for key in keys_order: ttk.Label(parent_frame, text=labels_text[key]).grid(row=target_row, column=current_col, padx=(5, 2), pady=2, sticky="e"); current_col += 1; spinbox_var = tk.IntVar(value=defaults.get(key, 0)); spinbox = Spinbox(parent_frame, from_=0, to=9999, increment=1, textvariable=spinbox_var, width=5); spinbox.grid(row=target_row, column=current_col, padx=(0, 10), pady=2, sticky="w"); spinboxes[key] = spinbox_var; current_col += 1
-        return spinboxes
+    def create_margin_spinboxes_inline(self, parent_frame, margin_vars_dict, target_row, start_col=0):
+        spinboxes_widgets = {}; keys_order = ['top', 'bottom', 'left', 'right']; labels_text = {'top': 'Arriba:', 'bottom': 'Abajo:', 'left': 'Izquierda:', 'right': 'Derecha:'}; current_col = start_col
+        col_indices_to_configure = []
+        for key in keys_order:
+            label_col = current_col; ttk.Label(parent_frame, text=labels_text[key]).grid(row=target_row, column=label_col, padx=(3, 0), pady=1, sticky="e"); current_col += 1
+            spinbox_col = current_col; spinbox_var = margin_vars_dict.get(key)
+            if spinbox_var: spinbox = Spinbox(parent_frame, from_=0, to=9999, increment=1, textvariable=spinbox_var, width=10); spinbox.grid(row=target_row, column=spinbox_col, padx=(10, 0), pady=1, sticky="w"); spinboxes_widgets[key] = spinbox; col_indices_to_configure.append(spinbox_col)
+            current_col += 1
+        for col_idx in col_indices_to_configure: parent_frame.columnconfigure(col_idx, weight=1)
+        return spinboxes_widgets
 
     def select_input_folder(self):
         folder_selected = filedialog.askdirectory()
         if folder_selected:
-            self.input_folder_path.set(folder_selected)
-            self.log_message(f"Origen: {folder_selected}\n")
-            self.update_output_path_display()
+            self.input_folder_path.set(folder_selected); self.log_message(f"Origen: {folder_selected}\n"); self.update_output_path_display()
 
     def update_output_path_display(self, *args):
         input_dir = self.input_folder_path.get(); output_name = self.output_folder_name_var.get().strip(); parent_dir = os.path.dirname(input_dir) if input_dir else None
@@ -259,8 +282,8 @@ class BatchCropperApp:
     def get_margins_from_gui(self):
         margins_top = {}; margins_bottom = {}
         try:
-            for key, var in self.spinboxes_top.items(): margins_top[key] = var.get()
-            for key, var in self.spinboxes_bottom.items(): margins_bottom[key] = var.get()
+            for key, var in self.margins_top_vars.items(): margins_top[key] = var.get()
+            for key, var in self.margins_bottom_vars.items(): margins_bottom[key] = var.get()
             all_margin_values = list(margins_top.values()) + list(margins_bottom.values())
             for val in all_margin_values:
                 if val < 0: raise ValueError("Márgenes no negativos.")
@@ -272,50 +295,74 @@ class BatchCropperApp:
         return { 'jpeg_quality': self.jpeg_quality_var.get(), 'png_compression': self.png_compression_var.get(), 'tiff_compression_flag': tiff_flag }
 
     def reset_progress(self):
-        self.cancel_event.clear()
-        self.progress_var.set(0.0)
-        self.progress_percent_var.set("0%")
-        self.elapsed_time_var.set("Transcurrido: 00:00")
-        self.etr_var.set("Restante: Calculando...")
-        self.start_button.config(state=tk.DISABLED)
-        self.cancel_button.config(state=tk.NORMAL)
-        if self.root:
-            self.root.update_idletasks()
+        self.cancel_event.clear(); self.progress_var.set(0.0); self.progress_percent_var.set("0%"); self.elapsed_time_var.set("Transcurrido: 00:00"); self.etr_var.set("Restante: Calculando..."); self.start_button.config(state=tk.DISABLED); self.cancel_button.config(state=tk.NORMAL)
+        if self.root: self.root.update_idletasks()
 
     def update_progress(self, current_value, total_value, elapsed_time):
-        if total_value == 0: return
-        progress_percent = (current_value / total_value) * 100
-        self.progress_var.set(progress_percent)
-        self.progress_percent_var.set(f"{progress_percent:.0f}%")
-        self.elapsed_time_var.set(f"Transcurrido: {format_time(elapsed_time)}")
-        if current_value > 0 and current_value < total_value:
-            time_per_item = elapsed_time / current_value
-            remaining_items = total_value - current_value
-            etr_seconds = time_per_item * remaining_items
-            self.etr_var.set(f"Restante: {format_time(etr_seconds)}")
-        elif current_value == 0 and total_value > 0:
-            self.etr_var.set("Restante: Calculando...")
-        else: # Completado
-            self.etr_var.set("Restante: 00:00")
+        if total_value == 0: return; progress_percent = (current_value / total_value) * 100; self.progress_var.set(progress_percent); self.progress_percent_var.set(f"{progress_percent:.0f}%"); self.elapsed_time_var.set(f"Transcurrido: {format_time(elapsed_time)}");
+        if current_value > 0 and current_value < total_value: time_per_item = elapsed_time / current_value; remaining_items = total_value - current_value; etr_seconds = time_per_item * remaining_items; self.etr_var.set(f"Restante: {format_time(etr_seconds)}");
+        elif current_value == 0 and total_value > 0: self.etr_var.set("Restante: Calculando...");
+        else: self.etr_var.set("Restante: 00:00")
 
     def finalize_progress(self, start_time, was_cancelled=False):
-        total_time = time.perf_counter() - start_time
-        status_message = "Cancelado" if was_cancelled else "Completado"
-        self.progress_var.set(100.0)
-        if not was_cancelled:
-            self.progress_percent_var.set("100%")
-        self.elapsed_time_var.set(f"Transcurrido: {format_time(total_time)}")
-        self.etr_var.set(f"{status_message} en: {format_time(total_time)}")
-        self.start_button.config(state=tk.NORMAL)
-        self.cancel_button.config(state=tk.DISABLED)
-        if self.root:
-            self.root.update_idletasks()
+        total_time = time.perf_counter() - start_time; status_message = "Cancelado" if was_cancelled else "Completado"; self.progress_var.set(100.0);
+        if not was_cancelled: self.progress_percent_var.set("100%")
+        self.elapsed_time_var.set(f"Transcurrido: {format_time(total_time)}"); self.etr_var.set(f"{status_message} en: {format_time(total_time)}"); self.start_button.config(state=tk.NORMAL); self.cancel_button.config(state=tk.DISABLED)
+        if self.root: self.root.update_idletasks()
 
     def cancel_processing(self):
         if not self.cancel_event.is_set():
-            self.log_message("--- Cancelación solicitada por el usuario ---\n")
-            self.cancel_event.set()
-            self.cancel_button.config(state=tk.DISABLED)
+            self.log_message("--- Cancelación solicitada por el usuario ---\n"); self.cancel_event.set(); self.cancel_button.config(state=tk.DISABLED)
+
+    def load_settings(self):
+        try:
+            if os.path.exists(CONFIG_FILE):
+                with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
+                    settings = json.load(f)
+                    self.output_folder_name_var.set(settings.get('output_folder_name', default_output_folder_name))
+                    self.jpeg_quality_var.set(settings.get('jpeg_quality', default_jpeg_quality))
+                    self.output_format_var.set(settings.get('output_format_key', default_output_format_key))
+                    self.top_identifier_var.set(settings.get('top_identifier', default_top_identifier))
+                    self.bottom_identifier_var.set(settings.get('bottom_identifier', default_bottom_identifier))
+                    saved_tiff_comp_name = settings.get('tiff_compression_name', tiff_compression_options.get(default_tiff_compression_flag))
+                    if saved_tiff_comp_name in self.tiff_flag_map: self.tiff_compression_var.set(saved_tiff_comp_name)
+                    else: self.tiff_compression_var.set(tiff_compression_options.get(default_tiff_compression_flag))
+                    margins_top_saved = settings.get('margins_top', margins_top_files_default)
+                    margins_bottom_saved = settings.get('margins_bottom', margins_bottom_files_default)
+                    for key, var in self.margins_top_vars.items(): var.set(margins_top_saved.get(key, margins_top_files_default.get(key, 0)))
+                    for key, var in self.margins_bottom_vars.items(): var.set(margins_bottom_saved.get(key, margins_bottom_files_default.get(key, 0)))
+                    self.input_folder_path.set(settings.get('last_input_folder', ''))
+                    self.log_message("Configuración anterior cargada.\n")
+            else:
+                self.log_message("Archivo de configuración no encontrado.\n")
+                # Set defaults for comboboxes if no config file
+                if not self.tiff_compression_var.get(): self.tiff_compression_var.set(tiff_compression_options.get(default_tiff_compression_flag))
+                if not self.output_format_var.get(): self.output_format_var.set(default_output_format_key)
+        except (json.JSONDecodeError, KeyError, Exception) as e:
+            self.log_message(f"Error al cargar configuración: {e}\nUsando valores por defecto.\n")
+            if not self.tiff_compression_var.get(): self.tiff_compression_var.set(tiff_compression_options.get(default_tiff_compression_flag))
+            if not self.output_format_var.get(): self.output_format_var.set(default_output_format_key)
+
+    def save_settings(self):
+        settings = {
+            'output_folder_name': self.output_folder_name_var.get(),
+            'jpeg_quality': self.jpeg_quality_var.get(),
+            'output_format_key': self.output_format_var.get(),
+            'top_identifier': self.top_identifier_var.get(),
+            'bottom_identifier': self.bottom_identifier_var.get(),
+            'tiff_compression_name': self.tiff_compression_var.get(),
+            'margins_top': {key: var.get() for key, var in self.margins_top_vars.items()},
+            'margins_bottom': {key: var.get() for key, var in self.margins_bottom_vars.items()},
+            'last_input_folder': self.input_folder_path.get()
+        };
+        try:
+            with open(CONFIG_FILE, 'w', encoding='utf-8') as f: json.dump(settings, f, indent=4)
+        except Exception as e:
+            self.log_message(f"Error al guardar configuración: {e}\n")
+
+    def on_closing(self):
+        self.save_settings()
+        self.root.destroy()
 
     # --- Lógica de Procesamiento Principal ---
     def start_processing_thread(self):
@@ -329,33 +376,32 @@ class BatchCropperApp:
         selected_output_format_key = self.output_format_var.get()
         selected_output_ext = output_formats.get(selected_output_format_key, ".jpg")
         tiff_scheme_name = self.tiff_compression_var.get()
+        top_id = self.top_identifier_var.get().strip()
+        bottom_id = self.bottom_identifier_var.get().strip()
+        if not top_id and not bottom_id: messagebox.showwarning("Advertencia", "Debe proporcionar al menos un identificador."); return
 
         self.reset_progress()
         self.log_message("\n--- Iniciando Proceso Recursivo ---\n")
         self.log_message(f"Origen: {input_dir}\nSalida Base: {output_dir}\n")
+        self.log_message(f"Identificador 'Top': '{top_id}'\nIdentificador 'Bottom': '{bottom_id}'\n")
         self.log_message(f"Márgenes Top: {margins_top}\nBottom: {margins_bottom}\n")
         self.log_message(f"Formato Salida: {selected_output_format_key}\n")
         self.log_message(f"Compresión:\n JPEG Calidad: {compression_params['jpeg_quality']}\n PNG Nivel: {compression_params['png_compression']} (No aplicable)\n TIFF Esquema: {tiff_scheme_name} (Si salida=TIFF)\n BMP: (No aplicable)\n")
-
-        processing_thread = threading.Thread(target=self.run_batch_crop_recursive, args=(input_dir, output_dir, margins_top, margins_bottom, compression_params, selected_output_ext), daemon=True)
+        self.save_settings()
+        processing_thread = threading.Thread(target=self.run_batch_crop_recursive, args=(input_dir, output_dir, margins_top, margins_bottom, compression_params, selected_output_ext, top_id, bottom_id), daemon=True)
         processing_thread.start()
 
-    def run_batch_crop_recursive(self, input_base_dir, output_base_dir, margins_top, margins_bottom, compression_params, selected_output_ext):
+    def run_batch_crop_recursive(self, input_base_dir, output_base_dir, margins_top, margins_bottom, compression_params, selected_output_ext, top_identifier, bottom_identifier):
         thread_start_time = time.perf_counter(); was_cancelled = False; processed_count, skipped_count, error_count = 0, 0, 0; total_read_time, total_process_time, total_write_time = 0.0, 0.0, 0.0; num_files = 0; files_to_process_list = []
-
         self.log_message("Buscando archivos (recursivamente)...\n")
         try:
             for current_dir_path, _, filenames in os.walk(input_base_dir):
                 for filename in filenames:
-                    if filename.lower().endswith(valid_extensions):
-                        input_file_path = os.path.join(current_dir_path, filename)
-                        files_to_process_list.append(input_file_path)
+                    if filename.lower().endswith(valid_extensions): files_to_process_list.append(os.path.join(current_dir_path, filename))
         except OSError as e: self.log_message(f"Error fatal al buscar archivos en '{input_base_dir}': {e}\n"); self.root.after(0, lambda: messagebox.showerror("Error Búsqueda", f"No se pudo recorrer: {e}")); self.root.after(0, self.finalize_progress, thread_start_time, was_cancelled); return
-
         num_files = len(files_to_process_list)
         if not files_to_process_list: self.log_message("No se encontraron archivos válidos.\n"); self.root.after(0, self.finalize_progress, thread_start_time, was_cancelled); return
         else: self.log_message(f"Encontrados {num_files} archivos.\n"); self.root.after(0, self.update_progress, 0, num_files, 0)
-
         file_index = 0
         try:
             for input_file_path in files_to_process_list:
@@ -366,10 +412,10 @@ class BatchCropperApp:
                 base_name, _ = os.path.splitext(os.path.basename(input_file_path)); output_filename = base_name + selected_output_ext; output_file_path = os.path.normpath(os.path.join(output_subdir, output_filename))
                 log_display_path_in = os.path.join(os.path.basename(input_base_dir), os.path.relpath(input_file_path, input_base_dir)); log_display_path_out = os.path.join(os.path.basename(output_base_dir), os.path.relpath(output_file_path, output_base_dir))
                 self.log_message(f"[{file_index+1}/{num_files}] Proc: '{log_display_path_in}' -> '{log_display_path_out}'...")
-                filename_for_margins = os.path.basename(input_file_path)
-                if "Top" in filename_for_margins: current_margins = margins_top
-                elif "Bottom" in filename_for_margins: current_margins = margins_bottom
-                else: self.log_message(" omitido (no Top/Bottom).\n"); skipped_count += 1; file_index += 1; elapsed_thread_time = time.perf_counter()-thread_start_time; self.root.after(0, self.update_progress, file_index, num_files, elapsed_thread_time); continue
+                filename_for_margins = os.path.basename(input_file_path); current_margins = None
+                if top_identifier and top_identifier in filename_for_margins: current_margins = margins_top; self.log_message(f" (ID '{top_identifier}')")
+                elif bottom_identifier and bottom_identifier in filename_for_margins: current_margins = margins_bottom; self.log_message(f" (ID '{bottom_identifier}')")
+                if current_margins is None: self.log_message(" omitido (no ID).\n"); skipped_count += 1; file_index += 1; elapsed_thread_time = time.perf_counter()-thread_start_time; self.root.after(0, self.update_progress, file_index, num_files, elapsed_thread_time); continue
                 success, t_read, t_proc, t_write = crop_image_with_margins(input_file_path, output_file_path, current_margins, compression_params, self.log_message)
                 total_read_time += t_read; total_process_time += t_proc; total_write_time += t_write
                 if success:
@@ -379,9 +425,7 @@ class BatchCropperApp:
                     except OSError as e: size_info = f" (Err tamaño:{e.strerror})"
                     self.log_message(f" ¡OK!{size_info}\n")
                 else: error_count += 1
-                file_index += 1
-                elapsed_thread_time = time.perf_counter() - thread_start_time
-                self.root.after(0, self.update_progress, file_index, num_files, elapsed_thread_time)
+                file_index += 1; elapsed_thread_time = time.perf_counter() - thread_start_time; self.root.after(0, self.update_progress, file_index, num_files, elapsed_thread_time)
         except Exception as e: was_cancelled = self.cancel_event.is_set(); self.log_message(f"\n!!! Error General: {e} !!!\n"); self.log_message(f"Traceback: {traceback.format_exc()}\n"); self.root.after(0, lambda: messagebox.showerror("Error Grave", f"Error: {e}"))
         finally:
             final_status = "--- Proceso Cancelado ---\n" if was_cancelled else "--- Proceso Completado ---\n"; self.log_message(f"\n{final_status}")
