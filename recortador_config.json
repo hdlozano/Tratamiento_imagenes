@@ -1,0 +1,21 @@
+{
+    "output_folder_name": "Imagenes_pro1",
+    "jpeg_quality": 100,
+    "output_format_key": "JPEG (*.jpg)",
+    "top_identifier": "Top",
+    "bottom_identifier": "Bottom",
+    "tiff_compression_name": "LZW (Lossless)",
+    "margins_top": {
+        "top": 260,
+        "bottom": 350,
+        "left": 50,
+        "right": 55
+    },
+    "margins_bottom": {
+        "top": 280,
+        "bottom": 400,
+        "left": 80,
+        "right": 10
+    },
+    "last_input_folder": "C:/Users/herda/Downloads/Imagenes/PF01"
+}
